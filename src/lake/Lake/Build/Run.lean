@@ -50,6 +50,10 @@ private structure MonitorContext where
   showTime : Bool
   /-- How often to poll jobs (in milliseconds). -/
   updateFrequency : Nat
+  /-- Stop the monitor after the first required target failure is detected. -/
+  stopOnFirstError : Bool
+  /-- Shared flag set to `true` by the monitor to cancel pending job scheduling. -/
+  cancelling? : Option (IO.Ref Bool)
 
 @[inline, implicit_reducible] def MonitorContext.logger (ctx : MonitorContext) : MonadLog BaseIO :=
   .stream ctx.out ctx.outLv ctx.useAnsi
@@ -178,8 +182,14 @@ private def sleep : MonitorM PUnit := do
   let now ← IO.monoMsNow
   modify fun s => {s with lastUpdate := now}
 
-private  partial def loop (unfinished : Array OpaqueJob) : MonitorM PUnit := do
+private partial def loop (unfinished : Array OpaqueJob) : MonitorM PUnit := do
   let (running, unfinished) ← poll unfinished
+  -- When `stopOnFirstError` fires, set the cancellation flag to prevent new
+  -- jobs from being scheduled, then let the loop drain naturally so that
+  -- already-running tasks (and their child processes) finish cleanly.
+  if (← read).stopOnFirstError && !(← get).failures.isEmpty then
+    if let some ref := (← read).cancelling? then
+      ref.set true
   if h : 0 < unfinished.size then
     renderProgress running unfinished h
     sleep
@@ -203,7 +213,10 @@ public structure MonitorResult where
 @[inline] def MonitorResult.isOk (self : MonitorResult) : Bool :=
   self.failures.isEmpty
 
-def mkMonitorContext (cfg : BuildConfig) (jobs : JobQueue) : BaseIO MonitorContext := do
+def mkMonitorContext
+  (cfg : BuildConfig) (jobs : JobQueue)
+  (cancelling? : Option (IO.Ref Bool) := none)
+: BaseIO MonitorContext := do
   let out ← cfg.out.get
   let useAnsi ← cfg.ansiMode.isEnabled out
   let outLv := cfg.outLv
@@ -217,6 +230,8 @@ def mkMonitorContext (cfg : BuildConfig) (jobs : JobQueue) : BaseIO MonitorConte
   return {
     jobs, out, failLv, outLv, minAction, showOptional
     useAnsi, showProgress, showTime, updateFrequency
+    stopOnFirstError := cfg.stopOnFirstError
+    cancelling?
   }
 
 def monitorJobs'
@@ -253,6 +268,7 @@ public def monitorJobs
   let ctx := {
     jobs, out, failLv, outLv, minAction, showOptional
     useAnsi, showProgress, showTime, updateFrequency
+    stopOnFirstError := false, cancelling? := none
   }
   monitorJobs' ctx initJobs initFailures resetCtrl
 
@@ -316,6 +332,7 @@ def monitorJob (ctx : MonitorContext) (job : Job α) : BaseIO (BuildResult α) :
 
 def mkBuildContext'
   (ws : Workspace) (cfg : BuildConfig) (jobs : JobQueue)
+  (cancelling? : Option (IO.Ref Bool) := none)
 : BaseIO BuildContext := return {
   opaqueWs := ws
   toBuildConfig := cfg
@@ -327,6 +344,7 @@ def mkBuildContext'
   registeredJobs := jobs
   leanTrace := .ofHash (pureHash ws.lakeEnv.leanGithash)
     s!"Lean {Lean.versionStringCore}, commit {ws.lakeEnv.leanGithash}"
+  cancelling?
 }
 
 def Workspace.startBuild
@@ -360,8 +378,9 @@ public def Workspace.runFetchM
   (ws : Workspace) (build : FetchM α) (cfg : BuildConfig := {}) (caption := "job computation")
 : IO α := do
   let jobs ← mkJobQueue
-  let mctx ← mkMonitorContext cfg jobs
-  let bctx ← mkBuildContext' ws cfg jobs
+  let cancelling? ← if cfg.stopOnFirstError then some <$> IO.mkRef false else pure none
+  let mctx ← mkMonitorContext cfg jobs cancelling?
+  let bctx ← mkBuildContext' ws cfg jobs cancelling?
   let job ← startBuild bctx build caption
   let result ← monitorJob mctx job
   finalizeBuild cfg bctx mctx result
@@ -400,8 +419,9 @@ public def Workspace.runBuild
   (ws : Workspace) (build : FetchM (Job α)) (cfg : BuildConfig := {})
 : IO α := do
   let jobs ← mkJobQueue
-  let mctx ← mkMonitorContext cfg jobs
-  let bctx ← mkBuildContext' ws cfg jobs
+  let cancelling? ← if cfg.stopOnFirstError then some <$> IO.mkRef false else pure none
+  let mctx ← mkMonitorContext cfg jobs cancelling?
+  let bctx ← mkBuildContext' ws cfg jobs cancelling?
   let job ← startBuild bctx build
   let result ← monitorBuild mctx job
   finalizeBuild cfg bctx mctx result
