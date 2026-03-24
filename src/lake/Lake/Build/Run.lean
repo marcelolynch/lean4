@@ -213,9 +213,9 @@ public structure MonitorResult where
   self.failures.isEmpty
 
 def mkMonitorContext
-  (cfg : BuildConfig) (jobs : JobQueue)
-  (cancelling? : Option IO.CancelToken := none)
-: BaseIO MonitorContext := do
+    (cfg : BuildConfig) (jobs : JobQueue)
+    (cancelling? : Option IO.CancelToken := none) :
+    BaseIO MonitorContext := do
   let out ← cfg.out.get
   let useAnsi ← cfg.ansiMode.isEnabled out
   let outLv := cfg.outLv
