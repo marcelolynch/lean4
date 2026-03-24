@@ -53,7 +53,7 @@ private structure MonitorContext where
   /-- Stop the monitor after the first required target failure is detected. -/
   stopOnFirstError : Bool
   /-- When set to `true`, no new build jobs are scheduled. -/
-  cancelling? : Option (IO.Ref Bool)
+  cancelling? : Option IO.CancelToken
 
 @[inline, implicit_reducible] def MonitorContext.logger (ctx : MonitorContext) : MonadLog BaseIO :=
   .stream ctx.out ctx.outLv ctx.useAnsi
@@ -187,8 +187,8 @@ private partial def loop (unfinished : Array OpaqueJob) : MonitorM PUnit := do
   -- On the first required-target failure with `--stop-on-first-error`,
   -- cancel pending job scheduling and let running tasks drain to completion.
   if (← read).stopOnFirstError && !(← get).failures.isEmpty then
-    if let some ref := (← read).cancelling? then
-      ref.set true
+    if let some tk := (← read).cancelling? then
+      tk.set
   if h : 0 < unfinished.size then
     renderProgress running unfinished h
     sleep
@@ -214,7 +214,7 @@ public structure MonitorResult where
 
 def mkMonitorContext
   (cfg : BuildConfig) (jobs : JobQueue)
-  (cancelling? : Option (IO.Ref Bool) := none)
+  (cancelling? : Option IO.CancelToken := none)
 : BaseIO MonitorContext := do
   let out ← cfg.out.get
   let useAnsi ← cfg.ansiMode.isEnabled out
@@ -331,7 +331,7 @@ def monitorJob (ctx : MonitorContext) (job : Job α) : BaseIO (BuildResult α) :
 
 def mkBuildContext'
   (ws : Workspace) (cfg : BuildConfig) (jobs : JobQueue)
-  (cancelling? : Option (IO.Ref Bool) := none)
+  (cancelling? : Option IO.CancelToken := none)
 : BaseIO BuildContext := return {
   opaqueWs := ws
   toBuildConfig := cfg
@@ -377,7 +377,7 @@ public def Workspace.runFetchM
   (ws : Workspace) (build : FetchM α) (cfg : BuildConfig := {}) (caption := "job computation")
 : IO α := do
   let jobs ← mkJobQueue
-  let cancelling? := some (← IO.mkRef false)
+  let cancelling? := some (← IO.CancelToken.new)
   let mctx ← mkMonitorContext cfg jobs cancelling?
   let bctx ← mkBuildContext' ws cfg jobs cancelling?
   let job ← startBuild bctx build caption
@@ -418,7 +418,7 @@ public def Workspace.runBuild
   (ws : Workspace) (build : FetchM (Job α)) (cfg : BuildConfig := {})
 : IO α := do
   let jobs ← mkJobQueue
-  let cancelling? := some (← IO.mkRef false)
+  let cancelling? := some (← IO.CancelToken.new)
   let mctx ← mkMonitorContext cfg jobs cancelling?
   let bctx ← mkBuildContext' ws cfg jobs cancelling?
   let job ← startBuild bctx build

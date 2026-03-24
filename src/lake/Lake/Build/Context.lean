@@ -60,7 +60,7 @@ public structure BuildContext extends BuildConfig, Context where
   When set to `true`, stops new build jobs from being scheduled.
   Already-running tasks complete normally; no new work is dispatched.
   -/
-  cancelling? : Option (IO.Ref Bool) := none
+  cancelling? : Option IO.CancelToken := none
 
 /-- A transformer to equip a monad with a `BuildContext`. -/
 public abbrev BuildT := ReaderT BuildContext

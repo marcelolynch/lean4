@@ -29,8 +29,8 @@ namespace Lake
 private def recBuildWithIndex (info : BuildInfo) : FetchM (Job (BuildData info.key)) :=
   match info with
   | .target pkg target => do
-    if let some ref := (← getBuildContext).cancelling? then
-      if ← ref.get then return .error  -- cancelled: skip scheduling new work
+    if let some tk := (← getBuildContext).cancelling? then
+      if ← tk.isSet then return .error  -- cancelled: skip scheduling new work
     if let some decl := pkg.findTargetDecl? target then
       if h : decl.kind.isAnonymous then
         let key := BuildKey.packageTarget pkg.keyName target
@@ -42,8 +42,8 @@ private def recBuildWithIndex (info : BuildInfo) : FetchM (Job (BuildData info.k
     else
       error s!"invalid target '{info}': target not found in package"
   | .facet target kind data facet => do
-    if let some ref := (← getBuildContext).cancelling? then
-      if ← ref.get then return .error  -- cancelled: skip scheduling new work
+    if let some tk := (← getBuildContext).cancelling? then
+      if ← tk.isSet then return .error  -- cancelled: skip scheduling new work
     if let some config := (← getWorkspace).findFacetConfig? facet then
       if h : config.kind = kind then
         let recFetch := config.fetchFn <| cast (by simp [h]) data

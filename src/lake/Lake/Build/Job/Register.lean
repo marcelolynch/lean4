@@ -40,12 +40,12 @@ exists for dependency propagation but is not surfaced in the monitor output,
 so interrupted pending jobs do not appear as failures.
 -/
 @[inline] public def registerJob
-  [Monad m] [MonadLiftT (ST IO.RealWorld) m] [MonadBuild m]
+  [Monad m] [MonadLiftT (ST IO.RealWorld) m] [MonadLiftT BaseIO m] [MonadBuild m]
   (caption : String) (job : Job α) (optional := false)
 : m (Job α) := do
   let ctx ← getBuildContext
-  if let some ref := ctx.cancelling? then
-    if ← ref.get then return job.renew
+  if let some tk := ctx.cancelling? then
+    if ← tk.isSet then return job.renew
   let job : Job α := {job with caption, optional}
   ctx.registeredJobs.modify (·.push job)
   return job.renew
