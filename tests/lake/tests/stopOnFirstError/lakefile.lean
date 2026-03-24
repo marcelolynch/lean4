@@ -12,13 +12,13 @@ package test
 @[default_target]
 target slowA pkg : Unit := Job.async do
   IO.sleep 3000
-  IO.FS.writeFile (pkg.dir / "slowA.done") ""
+  IO.FS.writeFile (pkg.dir / "slowA.produced.out") ""
 
 -- slowBWork: writes a marker file. NOT a default target -- only reachable
 -- via slowB's dependency chain. If fetched while cancellation is active,
 -- recBuildWithIndex short-circuits and this body never runs.
 target slowBWork pkg : Unit := Job.async do
-  IO.FS.writeFile (pkg.dir / "slowB.done") ""
+  IO.FS.writeFile (pkg.dir / "slowB.produced.out") ""
 
 -- slowB: after slowA completes, fetches slowBWork.
 -- By the time slowA finishes (3s), cancellation is already active (set within

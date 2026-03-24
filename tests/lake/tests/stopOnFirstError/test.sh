@@ -21,14 +21,14 @@ test_err "Some required targets logged failures" build --stop-on-first-error
 echo "# TEST: cancellation stops dependent jobs from scheduling new work"
 test_fails build --stop-on-first-error
 
-if [ ! -f slowA.done ]; then
-  echo "FAILURE: slowA.done should exist (slowA ran to completion)"
+if [ ! -f slowA.produced.out ]; then
+  echo "FAILURE: slowA.produced.out should exist (slowA ran to completion)"
   exit 1
 fi
-echo "PASS: slowA.done exists (slowA drained to completion)"
+echo "PASS: slowA.produced.out exists (slowA drained to completion)"
 
-if [ -f slowB.done ]; then
-  echo "FAILURE: slowB.done should not exist (slowBWork should have been cancelled)"
+if [ -f slowB.produced.out ]; then
+  echo "FAILURE: slowB.produced.out should not exist (slowBWork should have been cancelled)"
   exit 1
 fi
-echo "PASS: slowB.done does not exist (slowBWork was cancelled)"
+echo "PASS: slowB.produced.out does not exist (slowBWork was cancelled)"
