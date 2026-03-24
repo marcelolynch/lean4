@@ -87,13 +87,49 @@ public def JobState.merge (a b : JobState) : JobState where
 /-! ## JobTask -/
 
 /-- The result of a Lake job. -/
-public abbrev JobResult α := EResult Log.Pos JobState α
+public inductive JobResult (α : Type u) : Type u
+/-- A success value of type `α`, and a job state. -/
+| ok        : α → JobState → JobResult α
+/-- A failure value, a log position, and a job state. -/
+| error     : Log.Pos → JobState → JobResult α
+/-- The job was cancelled before it could complete. -/
+| cancelled : JobState → JobResult α
+
+instance : Inhabited (JobResult α) := ⟨.error 0 {}⟩
+
+namespace JobResult
+
+/-- Extract the `JobState` from a `JobResult`. -/
+@[inline] public def state : JobResult α → JobState
+  | .ok _ s => s
+  | .error _ s => s
+  | .cancelled s => s
+
+/-- Extract the result value, returning `none` on failure or cancellation. -/
+@[inline] public def result? : JobResult α → Option α
+  | .ok a _ => some a
+  | _ => none
+
+/-- Map a function over the success value. -/
+@[always_inline, inline]
+public protected def map (f : α → β) : JobResult α → JobResult β
+  | .ok a s => .ok (f a) s
+  | .error e s => .error e s
+  | .cancelled s => .cancelled s
+
+/-- Convert an `EResult` to a `JobResult`. `EResult` never carries cancellation. -/
+@[inline] public def ofEResult : EResult Log.Pos JobState α → JobResult α
+  | .ok a s => .ok a s
+  | .error e s => .error e s
+
+end JobResult
 
 /-- Add log entries to the beginning of the job's log. -/
 public def JobResult.prependLog (log : Log) (self : JobResult α) : JobResult α :=
   match self with
   | .ok a s => .ok a <| s.modifyLog (log ++ ·)
   | .error e s => .error ⟨log.size + e.val⟩ <| s.modifyLog (log ++ ·)
+  | .cancelled s => .cancelled <| s.modifyLog (log ++ ·)
 
 /-- The `Task` of a Lake job. -/
 public abbrev JobTask α := BaseIOTask (JobResult α)
@@ -114,7 +150,8 @@ public structure Job (α : Type u) where
   /-- Whether this job failing should cause the build to fail. -/
   optional : Bool := false
 
-public instance : Inhabited (Job α) := ⟨{task := default, caption := default, kind := .anonymous}⟩
+public instance : Inhabited (Job α) :=
+  ⟨{task := (pure (.error 0 {}) : BaseIOTask (JobResult α)), caption := "", kind := .anonymous}⟩
 
 namespace Job
 
@@ -133,6 +170,9 @@ public protected def cast (self : Job α) (h : ¬ self.kind.isAnonymous) : Job (
 
 @[inline] public protected def error [OptDataKind α] (log : Log := {}) (caption := "") : Job α :=
   .ofTask (Task.pure (.error 0 {log})) caption
+
+@[inline] public protected def cancelled [OptDataKind α] (caption := "") : Job α :=
+  .ofTask (Task.pure (.cancelled {})) caption
 
 @[inline] public protected def pure [kind : OptDataKind α] (a : α) (log : Log := {}) (caption := "") : Job α :=
   .ofTask (Task.pure (.ok a {log})) caption
@@ -176,6 +216,7 @@ Useful if the job is already known to be completed.
   self.mapResult (prio := prio) (sync := sync) fun
     | .ok a s => f a s
     | .error e s => .error e s
+    | .cancelled s => .cancelled s
 
 @[inline] public protected def map
   [OptDataKind β] (f : α → β) (self : Job α)

@@ -122,6 +122,7 @@ private def reportJob (job : OpaqueJob) : MonitorM PUnit := do
   let {jobNo, totalJobs, ..} ← get
   let {failLv, outLv, showOptional, out, useAnsi, showProgress, minAction, showTime, ..} ← read
   let {task, caption, optional, ..} := job
+  if let .cancelled _ := task.get then return  -- skip cancelled jobs: not a failure
   let {log, action, wantsRebuild, buildTime, ..} := task.get.state
   let maxLv := log.maxLv
   let failed := strictAnd log.hasEntries (maxLv ≥ failLv)
@@ -320,9 +321,10 @@ instance : CoeOut (BuildResult α) MonitorResult := ⟨BuildResult.toMonitorResu
 def monitorJob (ctx : MonitorContext) (job : Job α) : BaseIO (BuildResult α) := do
   let result ← monitorJobs' ctx #[job]
   if result.isOk then
-    if let some a ← job.wait? then
-      return {toMonitorResult := result, out := .ok a}
-    else
+    match (← job.wait) with
+    | .ok a _ => return {toMonitorResult := result, out := .ok a}
+    | .cancelled _ => return {toMonitorResult := result, out := .error "build cancelled"}
+    | .error _ _ =>
       -- Computation job failed but was unreported in the monitor. This should be impossible.
       return {toMonitorResult := result, out := .error <|
         "uncaught top-level build failure (this is likely a bug in Lake)"}
@@ -388,9 +390,10 @@ def monitorBuild (mctx : MonitorContext) (job : Job (Job α)) : BaseIO (BuildRes
   let result ← monitorJob mctx job
   match result.out with
   | .ok job =>
-    if let some a ← job.wait? then
-      return {result with out := .ok a}
-    else
+    match (← job.wait) with
+    | .ok a _ => return {result with out := .ok a}
+    | .cancelled _ => return {result with out := .error "build cancelled"}
+    | .error _ _ =>
       -- Job failed but was unreported in the monitor. It was likely not properly registered.
       return {result with out := .error <|
         "uncaught top-level build failure (this is likely a bug in the build script)"}

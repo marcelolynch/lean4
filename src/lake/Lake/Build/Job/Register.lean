@@ -30,6 +30,7 @@ public def Job.renew (self : Job α) : Job α :=
   self.mapResult (sync := true) fun
   | .ok a s => .ok a s.renew
   | .error _ s => .error 0 s.renew
+  | .cancelled s => .cancelled s.renew
 
 /--
 Registers the job for the top-level build monitor,

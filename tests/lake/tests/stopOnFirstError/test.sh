@@ -17,7 +17,7 @@ test_err "Some required targets logged failures" build --stop-on-first-error
 # Expected behavior:
 #   - slowA runs to completion (Lake drains in-flight jobs before exiting)
 #   - slowBWork is never scheduled (recBuildWithIndex sees cancellation and returns
-#     Job.error), so slowB.done is not written
+#     Job.cancelled), so slowB.done is not written
 echo "# TEST: cancellation stops dependent jobs from scheduling new work"
 test_fails build --stop-on-first-error
 
