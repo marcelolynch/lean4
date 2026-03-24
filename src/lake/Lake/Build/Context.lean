@@ -58,8 +58,7 @@ public structure BuildContext extends BuildConfig, Context where
   outputsRef? : Option CacheRef := none
   /--
   When set to `true`, stops new build jobs from being scheduled.
-  Used by `--stop-on-first-error` to drain running tasks cleanly
-  instead of abandoning them as orphaned processes.
+  Already-running tasks complete normally; no new work is dispatched.
   -/
   cancelling? : Option (IO.Ref Bool) := none
 

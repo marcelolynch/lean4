@@ -52,7 +52,7 @@ private structure MonitorContext where
   updateFrequency : Nat
   /-- Stop the monitor after the first required target failure is detected. -/
   stopOnFirstError : Bool
-  /-- Shared flag set to `true` by the monitor to cancel pending job scheduling. -/
+  /-- When set to `true`, no new build jobs are scheduled. -/
   cancelling? : Option (IO.Ref Bool)
 
 @[inline, implicit_reducible] def MonitorContext.logger (ctx : MonitorContext) : MonadLog BaseIO :=
@@ -184,9 +184,8 @@ private def sleep : MonitorM PUnit := do
 
 private partial def loop (unfinished : Array OpaqueJob) : MonitorM PUnit := do
   let (running, unfinished) ← poll unfinished
-  -- When `stopOnFirstError` fires, set the cancellation flag to prevent new
-  -- jobs from being scheduled, then let the loop drain naturally so that
-  -- already-running tasks (and their child processes) finish cleanly.
+  -- On the first required-target failure with `--stop-on-first-error`,
+  -- cancel pending job scheduling and let running tasks drain to completion.
   if (← read).stopOnFirstError && !(← get).failures.isEmpty then
     if let some ref := (← read).cancelling? then
       ref.set true
@@ -378,7 +377,7 @@ public def Workspace.runFetchM
   (ws : Workspace) (build : FetchM α) (cfg : BuildConfig := {}) (caption := "job computation")
 : IO α := do
   let jobs ← mkJobQueue
-  let cancelling? ← if cfg.stopOnFirstError then some <$> IO.mkRef false else pure none
+  let cancelling? := some (← IO.mkRef false)
   let mctx ← mkMonitorContext cfg jobs cancelling?
   let bctx ← mkBuildContext' ws cfg jobs cancelling?
   let job ← startBuild bctx build caption
@@ -419,7 +418,7 @@ public def Workspace.runBuild
   (ws : Workspace) (build : FetchM (Job α)) (cfg : BuildConfig := {})
 : IO α := do
   let jobs ← mkJobQueue
-  let cancelling? ← if cfg.stopOnFirstError then some <$> IO.mkRef false else pure none
+  let cancelling? := some (← IO.mkRef false)
   let mctx ← mkMonitorContext cfg jobs cancelling?
   let bctx ← mkBuildContext' ws cfg jobs cancelling?
   let job ← startBuild bctx build

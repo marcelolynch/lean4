@@ -6,7 +6,29 @@ source ../common.sh
 
 ./clean.sh
 
-# --stop-on-first-error should fail (exit code 1) when build errors are present
 echo "# TEST: --stop-on-first-error exits with failure on broken build"
 test_fails build --stop-on-first-error
 test_err "Some required targets logged failures" build --stop-on-first-error
+
+./clean.sh
+
+# The slow chain: slowA (3s sleep) and slowB (fetches slowBWork after slowA complete).
+# Fail1/Fail2 fail within ~200ms, triggering cancellation long before slowA finishes.
+# Expected behavior:
+#   - slowA runs to completion (Lake drains in-flight jobs before exiting)
+#   - slowBWork is never scheduled (recBuildWithIndex sees cancellation and returns
+#     Job.error), so slowB.done is not written
+echo "# TEST: cancellation stops dependent jobs from scheduling new work"
+test_fails build --stop-on-first-error
+
+if [ ! -f slowA.done ]; then
+  echo "FAILURE: slowA.done should exist (slowA ran to completion)"
+  exit 1
+fi
+echo "PASS: slowA.done exists (slowA drained to completion)"
+
+if [ -f slowB.done ]; then
+  echo "FAILURE: slowB.done should not exist (slowBWork should have been cancelled)"
+  exit 1
+fi
+echo "PASS: slowB.done does not exist (slowBWork was cancelled)"
