@@ -29,8 +29,8 @@ public def Job.renew (self : Job α) : Job α :=
   have : OptDataKind α := self.kind
   self.mapResult (sync := true) fun
   | .ok a s => .ok a s.renew
-  | .error _ s => .error 0 s.renew
-  | .cancelled s => .cancelled s.renew
+  | .error (.errorLogged _) s => .error (.errorLogged 0) s.renew
+  | .error e s => .error e s.renew
 
 /--
 Registers the job for the top-level build monitor,

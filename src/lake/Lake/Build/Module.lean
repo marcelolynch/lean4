@@ -84,21 +84,19 @@ private structure ModuleImportData where
         let impSet := if imp.includeSelf then impSet.insert imp.module else impSet
         .ok impSet s
       | .error e s => .error e s
-      | .cancelled s => .cancelled s
+    | .error .cancelled _ =>
+      match r with
+      | .error (.errorLogged _) _ => r
+      | _ => .error .cancelled r.state
     | .error _ _ =>
       let entry := LogEntry.error s!"{fileName}: bad import '{imp.module.name}'"
       match r with
-      | .ok _ s => .error 0 (s.logEntry entry)
-      | .error e s => .error e (s.logEntry entry)
-      | .cancelled s => .cancelled s
-    | .cancelled _ =>
-      match r with
-      | .error _ _ => r
-      | _ => .cancelled r.state
+      | .ok _ s => .error (.errorLogged 0) (s.logEntry entry)
+      | .error (.errorLogged e) s => .error (.errorLogged e) (s.logEntry entry)
+      | .error .cancelled s => .error .cancelled s
   return Job.ofTask <| task.map (sync := true) fun
     | .ok impSet s => .ok impSet.toArray s
     | .error e s => .error e s
-    | .cancelled s => .cancelled s
 
 private def computeTransImportsAux
   (fileName : String) (imports : Array Module)
