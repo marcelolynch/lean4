@@ -191,6 +191,7 @@ public protected def await (self : Job α) : LogIO α := do
   match (← self.wait) with
   | .ok a {log, ..} => log.replay; pure a
   | .error (.errorLogged n) {log, ..} => log.replay; throw n
+  -- No log entries to replay; throw pos 0 as a sentinel to signal failure upstream.
   | .error .cancelled _ => throw 0
 
 /-- Apply `f` asynchronously to the job's output. -/
@@ -250,6 +251,7 @@ results of `a` and `b`. The job `c` errors if either `a` or `b` error.
   | .ok a sa, .ok b sb => .ok (f a b) (sa.merge sb)
   | .error (.errorLogged _) sa, rb => .error (.errorLogged 0) (sa.merge rb.state)
   | ra, .error (.errorLogged _) sb => .error (.errorLogged 0) (ra.state.merge sb)
+  -- Remaining cases: at least one side is `.cancelled` and neither is `.errorLogged`.
   | ra, rb => .error .cancelled (ra.state.merge rb.state)
 
 /-- Merges this job with another, discarding its output and trace. -/
@@ -259,6 +261,7 @@ public def add (self : Job α) (other : Job β) : Job α :=
   | .ok a sa, .ok _ sb => .ok a {sa.merge sb with trace := sa.trace}
   | .error (.errorLogged _) sa, rb => .error (.errorLogged 0) {sa.merge rb.state with trace := sa.trace}
   | ra, .error (.errorLogged _) sb => .error (.errorLogged 0) {ra.state.merge sb with trace := ra.state.trace}
+  -- Remaining cases: at least one side is `.cancelled` and neither is `.errorLogged`.
   | ra, rb => .error .cancelled {ra.state.merge rb.state with trace := ra.state.trace}
 
 /-- Merges this job with another, discarding both outputs. -/

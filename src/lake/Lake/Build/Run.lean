@@ -187,8 +187,9 @@ private partial def loop (unfinished : Array OpaqueJob) : MonitorM PUnit := do
   let (running, unfinished) ← poll unfinished
   -- On the first required-target failure with `--stop-on-first-error`,
   -- cancel pending job scheduling and let running tasks drain to completion.
-  if (← read).stopOnFirstError && !(← get).failures.isEmpty then
-    if let some tk := (← read).cancelling? then
+  let ctx ← read
+  if ctx.stopOnFirstError && !(← get).failures.isEmpty then
+    if let some tk := ctx.cancelling? then
       tk.set
   if h : 0 < unfinished.size then
     renderProgress running unfinished h
@@ -322,14 +323,14 @@ def monitorJob (ctx : MonitorContext) (job : Job α) : BaseIO (BuildResult α) :
   let result ← monitorJobs' ctx #[job]
   if result.isOk then
     match (← job.wait) with
-    | .ok a _ => return {toMonitorResult := result, out := .ok a}
-    | .error .cancelled _ => return {toMonitorResult := result, out := .error "build cancelled"}
+    | .ok a _ => return {result with out := .ok a}
+    | .error .cancelled _ => return {result with out := .error "build cancelled"}
     | .error _ _ =>
       -- Computation job failed but was unreported in the monitor. This should be impossible.
-      return {toMonitorResult := result, out := .error <|
+      return {result with out := .error <|
         "uncaught top-level build failure (this is likely a bug in Lake)"}
   else
-    return {toMonitorResult := result, out := .error "build failed"}
+    return {result with out := .error "build failed"}
 
 def mkBuildContext'
   (ws : Workspace) (cfg : BuildConfig) (jobs : JobQueue)
