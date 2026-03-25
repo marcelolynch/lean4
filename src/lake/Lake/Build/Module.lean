@@ -86,8 +86,8 @@ private structure ModuleImportData where
       | .error e s => .error e s
     | .error .cancelled _ =>
       match r with
-      | .error (.errorLogged _) _ => r
-      | _ => .error .cancelled r.state
+      | .ok _ => .error .cancelled r.state
+      | .error _ _ => r
     | .error _ _ =>
       let entry := LogEntry.error s!"{fileName}: bad import '{imp.module.name}'"
       match r with
