@@ -32,3 +32,21 @@ if [ -f slowB.produced.out ]; then
   exit 1
 fi
 echo "PASS: slowB.produced.out does not exist (slowBWork was cancelled)"
+
+./clean.sh
+
+# Module import chain test: SlowChain.A takes ~3s to compile; SlowChain.B imports A.
+# Fail1/Fail2 fail within ~200ms, setting the cancellation token long before A finishes.
+# Bug: the task chain wired up by recBuildLean (setupJob.mapM callback) runs in JobM
+# context and never checks the cancellation token. Once A succeeds (3s later), the
+# chain fires and compiles B even though cancellation was already active.
+# Expected: SlowChain.B should NOT be compiled after cancellation.
+echo "# TEST: cancellation token is checked in module import task chains"
+test_fails build --stop-on-first-error
+
+if [ -f ".lake/build/lib/lean/SlowChain/B.olean" ]; then
+  echo "FAILURE: SlowChain/B.olean exists -- downstream module was compiled after cancellation"
+  echo "         (bug: mapM callbacks in recBuildLean bypass the cancellation token)"
+  exit 1
+fi
+echo "PASS: SlowChain/B.olean does not exist (downstream module skipped after cancellation)"

@@ -201,7 +201,9 @@ public protected def await (self : Job α) : LogIO α := do
 : SpawnM (Job β) := .ofFn fun fetch pkg? stack store ctx trace => do
   self.bindTask fun task => do
   BaseIO.mapTask (t := task) (prio := prio) (sync := sync) fun
-    | .ok a s =>
+    | .ok a s => do
+      if let some tk := ctx.cancelling? then
+        if ← tk.isSet then return .error .cancelled s
       let trace := mixTrace trace s.trace
       JobResult.ofLogResult <$> (withLoggedIO (f a)).toFn fetch pkg? stack store ctx {s with trace}
     | .error e s => return .error e s
@@ -217,6 +219,8 @@ and asynchronously await the resulting job.
   self.bindTask fun task => do
   BaseIO.bindTask task (prio := prio) (sync := sync) fun
     | .ok a sa => do
+      if let some tk := ctx.cancelling? then
+        if ← tk.isSet then return Task.pure (.error .cancelled sa)
       let trace := mixTrace trace sa.trace
       match (← withLoggedIO (f a) |>.toFn fetch pkg? stack store ctx {sa with trace}) with
       | .ok job sa =>

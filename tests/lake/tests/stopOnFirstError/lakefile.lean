@@ -6,6 +6,13 @@ package test
 @[default_target] lean_lib Fail1
 @[default_target] lean_lib Fail2
 
+-- SlowChain: two-module library where B imports A.
+-- SlowChain.A takes ~3 seconds to compile (via #eval IO.sleep).
+-- SlowChain.B should NOT be compiled when the build is cancelled while A is in-flight,
+-- but the task chain in recBuildLean bypasses the cancellation token (see test.sh).
+@[default_target] lean_lib SlowChain where
+  globs := #[.submodules `SlowChain]
+
 -- slowA: sleeps 3 seconds then writes a marker file.
 -- This target runs independently of the failing ones and will be in-flight
 -- when cancellation is triggered by the Fail1/Fail2 errors.
