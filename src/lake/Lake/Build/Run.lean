@@ -51,7 +51,7 @@ private structure MonitorContext where
   /-- How often to poll jobs (in milliseconds). -/
   updateFrequency : Nat
   /-- Stop the monitor after the first required target failure is detected. -/
-  stopOnFirstError : Bool
+  failFast : Bool
   /-- When set to `true`, no new build jobs are scheduled. -/
   cancelling? : Option IO.CancelToken
 
@@ -185,10 +185,10 @@ private def sleep : MonitorM PUnit := do
 
 private partial def loop (unfinished : Array OpaqueJob) : MonitorM PUnit := do
   let (running, unfinished) ← poll unfinished
-  -- On the first required-target failure with `--stop-on-first-error`,
+  -- On the first required-target failure with `--fail-fast`,
   -- cancel pending job scheduling and let running tasks drain to completion.
   let ctx ← read
-  if ctx.stopOnFirstError && !(← get).failures.isEmpty then
+  if ctx.failFast && !(← get).failures.isEmpty then
     if let some tk := ctx.cancelling? then
       tk.set
   if h : 0 < unfinished.size then
@@ -231,7 +231,7 @@ def mkMonitorContext
   return {
     jobs, out, failLv, outLv, minAction, showOptional
     useAnsi, showProgress, showTime, updateFrequency
-    stopOnFirstError := cfg.stopOnFirstError
+    failFast := cfg.failFast
     cancelling?
   }
 
@@ -269,7 +269,7 @@ public def monitorJobs
   let ctx := {
     jobs, out, failLv, outLv, minAction, showOptional
     useAnsi, showProgress, showTime, updateFrequency
-    stopOnFirstError := false, cancelling? := none
+    failFast := false, cancelling? := none
   }
   monitorJobs' ctx initJobs initFailures resetCtrl
 

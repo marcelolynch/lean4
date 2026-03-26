@@ -22,7 +22,7 @@ public structure BuildConfig extends LogConfig where
   /-- Early exit if a target has to be rebuilt. -/
   noBuild : Bool := false
   /-- Stop the build monitor after the first required target failure is detected. -/
-  stopOnFirstError : Bool := false
+  failFast : Bool := false
   /-- Verbosity level (`-q`, `-v`, or neither). -/
   verbosity : Verbosity := .normal
   /-- Whether to print a message when the build finishes successfully (if not quiet). -/

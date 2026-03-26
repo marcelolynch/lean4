@@ -56,7 +56,7 @@ public structure LakeOptions where
   oldMode : Bool := false
   trustHash : Bool := true
   noBuild : Bool := false
-  stopOnFirstError : Bool := false
+  failFast : Bool := false
   noCache : Option Bool := none
   failLv : LogLevel := .error
   outLv? : Option LogLevel := .none
@@ -128,7 +128,7 @@ def LakeOptions.mkBuildConfig
   oldMode := opts.oldMode
   trustHash := opts.trustHash
   noBuild := opts.noBuild
-  stopOnFirstError := opts.stopOnFirstError
+  failFast := opts.failFast
   verbosity := opts.verbosity
   failLv := opts.failLv
   outLv := opts.outLv
@@ -244,7 +244,7 @@ def lakeLongOption : (opt : String) → CliM PUnit
 | "--text"        => modifyThe LakeOptions ({· with outFormat := .text})
 | "--json"        => modifyThe LakeOptions ({· with outFormat := .json})
 | "--no-build"    => modifyThe LakeOptions ({· with noBuild := true})
-| "--stop-on-first-error" => modifyThe LakeOptions ({· with stopOnFirstError := true})
+| "--fail-fast" => modifyThe LakeOptions ({· with failFast := true})
 | "--no-cache"    => modifyThe LakeOptions ({· with noCache := true})
 | "--try-cache"   => modifyThe LakeOptions ({· with noCache := false})
 | "--rehash"      => modifyThe LakeOptions ({· with trustHash := false})
