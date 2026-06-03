@@ -1,0 +1,6 @@
+name = "sandboxWrapperLandlock"
+defaultTargets = ["Test"]
+
+[[lean_lib]]
+name = "Test"
+globs = "Test.+"

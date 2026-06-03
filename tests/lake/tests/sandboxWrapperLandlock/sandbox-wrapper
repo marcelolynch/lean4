@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""A `LAKE_WRAPPED_EXEC` wrapper that reproduces the *entire* `lake build
+--sandbox` (#13940) write-isolation scheme -- including the per-module private
+scratch directory and the relocate-and-validate step -- ENTIRELY outside Lean
+and Lake, on Linux via Landlock.
+
+The `lake build --sandbox` PR splits this work across two trusted components it
+*adds* to the toolchain:
+
+  * Lake (`Actions.lean`): redirects each output `-o/-i/-c/-b` into a private
+    scratch dir, then after the run relocates the artifacts into the real build
+    tree, validating each as a regular file.
+  * the lean runtime (`landlock.cpp`): the `lean --sandbox-exec --rw <dir>`
+    self-exec mode that installs the write-only Landlock policy.
+
+This wrapper shows neither addition is necessary. It does all of it from the
+manifest alone:
+
+  1. Make a fresh private `scratch/` (+ `tmp/`) directory for this one job.
+  2. PATH TRANSLATION WITHOUT LAKE: every argv token that equals a declared
+     output path is rewritten to `scratch/<basename>`. The manifest already
+     carries both `args` (with the output paths embedded after -o/-i/-c/-b) and
+     `outputs` (those same absolute path strings), so `outputs ∩ args` *is* the
+     translation table -- no need to parse lean's flags or to have Lake do it.
+  3. Run the command under Landlock with writes confined to scratch/+tmp/
+     (`landlock-exec`, a standalone port of the PR's runtime policy).
+  4. Relocate each produced `scratch/<basename>` to its real path, refusing
+     anything that is not a regular file (symlink/FIFO/...), exactly like the
+     PR's `relocateSandboxOutput`.
+
+Because scratch/ is private to this job, the Landlock grant on it is safe by
+construction: there are no sibling modules' artifacts in it to overwrite. That
+is the whole reason directory-granular Landlock suffices here.
+
+Usage (invoked by Lake): sandbox-wrapper <manifest.json>
+"""
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+def log(msg: str) -> None:
+    # Diagnostics go to stderr ONLY; stdout is reserved for lean's JSON output,
+    # which Lake parses.
+    sys.stderr.write(f"sandbox-wrapper: {msg}\n")
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        log("missing manifest path")
+        return 2
+
+    with open(sys.argv[1]) as f:
+        m = json.load(f)
+
+    cmd = m["cmd"]
+    args = list(m["args"])
+    env_over = m.get("env") or {}
+    cwd = m.get("cwd") or os.getcwd()
+    outputs = list(m.get("outputs") or [])
+
+    # Locate the Landlock helper (alongside this script unless overridden).
+    here = os.path.dirname(os.path.realpath(__file__))
+    landlock_exec = os.environ.get("LANDLOCK_EXEC", os.path.join(here, "landlock-exec"))
+    if not os.path.exists(landlock_exec):
+        log(f"landlock-exec helper not found at {landlock_exec}; "
+            f"set $LANDLOCK_EXEC or build it next to this script")
+        return 2
+
+    # 1. Private per-job scratch + tmp. Placed under `lake_home` (the `.lake`
+    #    dir) when known, so it shares a filesystem with the build tree and the
+    #    final relocate is an atomic `rename`; otherwise fall back to the system
+    #    temp dir (relocate then copies across devices).
+    scratch_base = m.get("lake_home")
+    if scratch_base and os.path.isdir(scratch_base):
+        scratch_base = os.path.join(scratch_base, "sandbox-scratch")
+        os.makedirs(scratch_base, exist_ok=True)
+    else:
+        scratch_base = None
+    scratch_root = tempfile.mkdtemp(prefix="lake-sbx-", dir=scratch_base)
+    scratch = os.path.join(scratch_root, "scratch")
+    tmp = os.path.join(scratch_root, "tmp")
+    os.makedirs(scratch, exist_ok=True)
+    os.makedirs(tmp, exist_ok=True)
+
+    # 2. Path translation, from the manifest alone. Match argv tokens against the
+    #    declared output strings (byte-identical to what Lake emitted in both
+    #    places) and redirect them into scratch by basename. Reads/inputs are
+    #    untouched -- the Landlock policy leaves reads unrestricted.
+    out_set = set(outputs)
+
+    def scratch_path(real: str) -> str:
+        return os.path.join(scratch, os.path.basename(real))
+
+    new_args = [scratch_path(a) if a in out_set else a for a in args]
+    redirected = [a for a in args if a in out_set]
+    log(f"job={m.get('job_id', '')} scratch={scratch} "
+        f"redirected {len(redirected)} output arg(s)")
+
+    # 3. Run under Landlock: writes confined to scratch/ and tmp/, reads open.
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in env_over.items()})
+    # Point the subprocess's temp dirs into the sandboxed tmp/.
+    for var in ("TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME"):
+        env[var] = tmp
+
+    proc = subprocess.run(
+        [landlock_exec, "--rw", scratch, "--rw", tmp, "--", cmd, *new_args],
+        cwd=cwd,
+        env=env,
+    )
+
+    # 4. On success, relocate artifacts into the real build tree, validating
+    #    each as a regular file. (On failure, leave the tree untouched and let
+    #    Lake observe the non-zero exit code.)
+    if proc.returncode == 0:
+        for real in outputs:
+            sp = scratch_path(real)
+            if not os.path.lexists(sp):
+                # Not produced (e.g. `.c`/`.ir` deferred to a later `leanir`
+                # call in postpone-compile mode). Skip, like the PR does.
+                continue
+            st = os.lstat(sp)
+            if not stat.S_ISREG(st.st_mode):
+                log(f"sandbox produced a non-regular file for '{real}'; "
+                    f"refusing to install it")
+                shutil.rmtree(scratch_root, ignore_errors=True)
+                return 1
+            real_abs = real if os.path.isabs(real) else os.path.join(cwd, real)
+            os.makedirs(os.path.dirname(real_abs) or ".", exist_ok=True)
+            try:
+                os.replace(sp, real_abs)  # atomic when same filesystem
+            except OSError:
+                # Cross-device (scratch on a different mount): copy + remove.
+                shutil.copyfile(sp, real_abs)
+                os.remove(sp)
+
+    shutil.rmtree(scratch_root, ignore_errors=True)
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
