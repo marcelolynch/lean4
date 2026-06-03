@@ -1,0 +1,6 @@
+name = "sandboxLakeHybrid"
+defaultTargets = ["Test"]
+
+[[lean_lib]]
+name = "Test"
+globs = "Test.+"

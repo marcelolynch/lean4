@@ -944,9 +944,17 @@ def Module.buildLean
       s!"{mod.pkg.baseName}_{mod.name}")
   else
     pure (#[], none, "")
+  -- When sandboxing, the `lean`/`leanir` subprocesses write into a private
+  -- per-module scratch directory (on the same filesystem as the build dir, so
+  -- artifacts can be relocated by a trusted rename). Lake redirects the outputs
+  -- there and relocates afterwards; the actual write confinement is delegated to
+  -- the `$LAKE_WRAPPED_EXEC` wrapper.
+  let sandboxDir? := if (← getSandbox) then
+    some (mod.pkg.buildDir / "sandbox" / mod.name.toString) else none
   compileLeanModule srcFile relSrcFile setup mod.setupFile arts args
     (← getLeanPath) (← getLean) (← getLeanir)
     (extraInputs := extraInputs) (lakeRoots := lakeRoots) (jobId := jobId)
+    (sandboxDir? := sandboxDir?)
   mod.clearOutputHashes
   mod.computeArtifacts setup.isModule
 

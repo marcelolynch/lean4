@@ -21,6 +21,22 @@ public structure BuildConfig extends LogConfig where
   trustHash : Bool := true
   /-- Early exit if a target has to be rebuilt. -/
   noBuild : Bool := false
+  /--
+  Route each module compilation's outputs through a private per-module scratch
+  directory: trusted Lake redirects the `lean`/`leanir` outputs there and
+  relocates the produced artifacts into the build tree afterwards (validating
+  them as regular files).
+
+  This flag does NOT by itself confine where the subprocess may write -- on its
+  own it is just a relocate detour that produces an identical build. It exists to
+  make a *write-confining* `$LAKE_WRAPPED_EXEC` wrapper (e.g. Landlock) viable and
+  safe: the wrapper denies all writes outside the scratch dir, the redirect lets
+  the module's legitimate outputs land inside it anyway, and because the scratch
+  dir is private to one module, the wrapper's directory-granular grant on it
+  cannot be used to poison a sibling module's `.olean`. Without such a wrapper,
+  this flag provides no isolation.
+  -/
+  sandbox : Bool := false
   /-- Verbosity level (`-q`, `-v`, or neither). -/
   verbosity : Verbosity := .normal
   /-- Whether to print a message when the build finishes successfully (if not quiet). -/
@@ -93,6 +109,9 @@ public instance [Pure m] : MonadLift LakeM (BuildT m) where
 
 @[inline] public def getNoBuild [Functor m] [MonadBuild m] : m Bool :=
   (·.noBuild) <$> getBuildConfig
+
+@[inline] public def getSandbox [Functor m] [MonadBuild m] : m Bool :=
+  (·.sandbox) <$> getBuildConfig
 
 @[inline] public def getVerbosity [Functor m] [MonadBuild m] : m Verbosity :=
   (·.verbosity) <$> getBuildConfig

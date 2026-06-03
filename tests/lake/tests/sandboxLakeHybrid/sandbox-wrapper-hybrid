@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""The HYBRID-mode `LAKE_WRAPPED_EXEC` wrapper.
+
+In hybrid mode the work is split the way the design discussion concluded is the
+"right" layering:
+
+  * LAKE owns build-tree integrity: it creates the private per-module scratch
+    dir, redirects each `-o/-i/-c/-b` output into it, and after the run
+    relocates the artifacts into the real tree with regular-file validation.
+    (Lake has the structured arg<->output mapping, so it does this directly.)
+  * THIS WRAPPER owns only OS isolation/transport: it confines writes to the
+    directories Lake already pointed the outputs at, and runs the command. It
+    does NO path translation and NO relocation -- those are Lake's job now.
+
+So the manifest this wrapper receives already has `args`/`outputs` pointing into
+Lake's scratch dir. The wrapper's whole job is: grant Landlock write access to
+the parent directory of each declared output (plus the subprocess temp dir),
+then exec under `landlock-exec`. Because Lake put every output in a private
+scratch dir, those parent dirs contain no other module's artifacts, so the
+directory-granular Landlock grant is safe.
+
+Contrast with the non-hybrid `sandbox-wrapper`, which does the scratch
+redirection and relocation itself from the manifest. Both close the same vector;
+this one keeps the wrapper trivial at the cost of a (small) Lake change.
+
+Usage (invoked by Lake): sandbox-wrapper-hybrid <manifest.json>
+"""
+import json
+import os
+import subprocess
+import sys
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.stderr.write("sandbox-wrapper-hybrid: missing manifest path\n")
+        return 2
+
+    with open(sys.argv[1]) as f:
+        m = json.load(f)
+
+    cmd = m["cmd"]
+    args = list(m["args"])
+    env_over = m.get("env") or {}
+    cwd = m.get("cwd") or os.getcwd()
+    outputs = list(m.get("outputs") or [])
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    landlock_exec = os.environ.get("LANDLOCK_EXEC", os.path.join(here, "landlock-exec"))
+    if not os.path.exists(landlock_exec):
+        sys.stderr.write(f"sandbox-wrapper-hybrid: landlock-exec not found at "
+                         f"{landlock_exec}\n")
+        return 2
+
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in env_over.items()})
+
+    # Writable set = the parent dir of each (already-scratch) output, plus the
+    # subprocess temp dir Lake pointed us at. Resolve relative paths against cwd.
+    def parent(p: str) -> str:
+        ap = p if os.path.isabs(p) else os.path.join(cwd, p)
+        return os.path.dirname(ap)
+
+    rw = {parent(o) for o in outputs}
+    for var in ("TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME"):
+        if env.get(var):
+            rw.add(env[var])
+    rw = sorted(d for d in rw if d and os.path.isdir(d))
+
+    rw_args = []
+    for d in rw:
+        rw_args += ["--rw", d]
+    sys.stderr.write(f"sandbox-wrapper-hybrid: job={m.get('job_id', '')} "
+                     f"rw={rw}\n")
+
+    proc = subprocess.run(
+        [landlock_exec, *rw_args, "--", cmd, *args],
+        cwd=cwd,
+        env=env,
+    )
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

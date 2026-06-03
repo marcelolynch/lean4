@@ -27,6 +27,74 @@ open Lean hiding SearchPath
 namespace Lake
 
 /--
+Per-module sandbox directories: a private `scratch` directory that a sandboxed
+`lean`/`leanir` subprocess is permitted to write to, and a `tmp` subdirectory
+for the subprocess's temporary files.
+
+This is the "hybrid" sandbox: Lake (trusted) owns the build-tree integrity work
+-- it redirects each output into `scratch`, then relocates the produced
+artifacts into the real tree afterwards (validating them as regular files) --
+while the OS-level write confinement is delegated to `$LAKE_WRAPPED_EXEC`
+(e.g. a Landlock wrapper) via `runRawProcOrWrapped`. Because `scratch` is private
+to one module, the wrapper's directory-granular write grant on it is safe by
+construction: no sibling module's artifacts live there to be poisoned.
+-/
+structure SandboxDirs where
+  scratch : FilePath
+  tmp : FilePath
+
+@[inline] def SandboxDirs.ofScratch (scratch : FilePath) : SandboxDirs where
+  scratch := scratch
+  tmp := scratch / "tmp"
+
+/-- Empty the scratch and tmp directories, ready for a fresh sandboxed run. -/
+def SandboxDirs.reset (d : SandboxDirs) : IO Unit := do
+  removeDirAllIfExists d.scratch
+  IO.FS.createDirAll d.scratch
+  IO.FS.createDirAll d.tmp
+
+/-- Where a sandboxed subprocess should write the artifact whose real path is `real`. -/
+@[inline] def SandboxDirs.outPath (d : SandboxDirs) (real : FilePath) : FilePath :=
+  d.scratch / real.fileName.getD real.toString
+
+/-- Redirect every output artifact in `arts` into the scratch directory (by base
+name). The `lean?` source field is left untouched (it is an input). -/
+def SandboxDirs.redirectArtifacts (d : SandboxDirs) (arts : ModuleArtifacts) : ModuleArtifacts :=
+  { arts with
+    olean?        := arts.olean?.map d.outPath
+    oleanServer?  := arts.oleanServer?.map d.outPath
+    oleanPrivate? := arts.oleanPrivate?.map d.outPath
+    ilean?        := arts.ilean?.map d.outPath
+    ir?           := arts.ir?.map d.outPath
+    c?            := arts.c?.map d.outPath
+    bc?           := arts.bc?.map d.outPath }
+
+/-- Environment for a sandboxed subprocess: `LEAN_PATH` plus temp-dir variables
+pointed at the private `tmp` directory so the subprocess spills there. -/
+def SandboxDirs.spawnEnv (d? : Option SandboxDirs) (leanPath : SearchPath) : Array (String × Option String) :=
+  match d? with
+  | none => #[("LEAN_PATH", leanPath.toString)]
+  | some d => #[
+      ("LEAN_PATH", leanPath.toString),
+      ("TMPDIR", d.tmp.toString), ("TMP", d.tmp.toString),
+      ("TEMP", d.tmp.toString), ("XDG_CACHE_HOME", d.tmp.toString)]
+
+/--
+Move a sandboxed output from the scratch directory to its real path `real`.
+The scratch contents are produced by an untrusted build, so anything that is not
+a plain regular file (a symlink, FIFO, device node, ...) is rejected rather than
+installed into the trusted build tree. Does nothing if the file was not produced.
+-/
+def relocateSandboxOutput (d : SandboxDirs) (real : FilePath) : LogIO Unit := do
+  let sp := d.outPath real
+  unless (← sp.pathExists) do return
+  let md ← sp.symlinkMetadata
+  unless md.type == .file do
+    error s!"sandbox produced a non-regular file for '{real}'; refusing to install it"
+  createParentDirs real
+  IO.FS.rename sp real
+
+/--
 Compute the argv for invoking `lean` on a module given its resolved `ModuleSetup`, output
 artifacts, and any extra `leanArgs`. Pure: performs no IO and does not create the setup file.
 Returns `(args, postponeCompile)`; when `postponeCompile` is `true`, `-c` is omitted from `args`
@@ -93,17 +161,25 @@ public def compileLeanModule
   (extraInputs : Array FilePath := #[])
   (lakeRoots : Option (FilePath × FilePath × FilePath × FilePath) := none)
   (jobId : String := "")
+  (sandboxDir? : Option FilePath := none)
 : LogIO Unit := do
-  if let some oleanFile := arts.olean? then createParentDirs oleanFile
-  if let some ileanFile := arts.ilean? then createParentDirs ileanFile
-  let (args, postponeCompile) := mkLeanModuleArgs leanFile setup setupFile arts leanArgs
+  -- In sandbox mode, redirect every output into a private scratch dir so the
+  -- (untrusted) subprocess never names the real build tree; trusted Lake
+  -- relocates the artifacts afterwards. The OS-level confinement to the scratch
+  -- dir is the wrapper's job (delegated via `runRawProcOrWrapped`).
+  let sandbox? := sandboxDir?.map SandboxDirs.ofScratch
+  if let some d := sandbox? then d.reset
+  let effArts := match sandbox? with | some d => d.redirectArtifacts arts | none => arts
+  if let some oleanFile := effArts.olean? then createParentDirs oleanFile
+  if let some ileanFile := effArts.ilean? then createParentDirs ileanFile
+  let (args, postponeCompile) := mkLeanModuleArgs leanFile setup setupFile effArts leanArgs
   if !postponeCompile then
-    if let some cFile := arts.c? then createParentDirs cFile
-  if let some bcFile := arts.bc? then createParentDirs bcFile
+    if let some cFile := effArts.c? then createParentDirs cFile
+  if let some bcFile := effArts.bc? then createParentDirs bcFile
   createParentDirs setupFile
   IO.FS.writeFile setupFile (toJson setup).pretty
   withLogErrorPos do
-  let outputs := collectLeanModuleOutputPaths arts postponeCompile
+  let outputs := collectLeanModuleOutputPaths effArts postponeCompile
   -- `lean` also opens any dynlibs / plugins declared in the setup at runtime
   -- (e.g. `precompileModules` projects). A sandbox wrapper that allow-lists
   -- from `inputs` would block those without them; include them so the inputs
@@ -111,8 +187,7 @@ public def compileLeanModule
   let inputs := #[leanFile, setupFile] ++ extraInputs
                 ++ setup.dynlibs ++ setup.plugins.map (·.path)
   let out ← Lake.WrappedExec.runRawProcOrWrapped
-    { args, cmd := lean.toString,
-      env := #[("LEAN_PATH", leanPath.toString)] }
+    { args, cmd := lean.toString, env := SandboxDirs.spawnEnv sandbox? leanPath }
     inputs outputs lakeRoots jobId
   unless out.stdout.isEmpty do
     let txt ← out.stdout.split '\n' |>.foldM (init := "") fun (txt : String) ln => do
@@ -133,18 +208,42 @@ public def compileLeanModule
     logInfo s!"stderr:\n{out.stderr.trimAscii}"
   if out.exitCode ≠ 0 then
     error s!"Lean exited with code {out.exitCode}"
+  -- Relocate the artifacts the sandboxed `lean` produced into the real build
+  -- tree. (In postpone-compile mode `.c`/`.ir` are produced later by `leanir`
+  -- and are simply absent from the scratch dir here, so they are skipped.)
+  if let some d := sandbox? then
+    for real in #[arts.olean?, arts.oleanServer?, arts.oleanPrivate?,
+        arts.ilean?, arts.ir?, arts.c?, arts.bc?].filterMap id do
+      relocateSandboxOutput d real
   if postponeCompile then
     if let (some irFile, some cFile) := (arts.ir?, arts.c?) then
       createParentDirs irFile
       createParentDirs cFile
       try
-        proc {
-          cmd := leanir.toString
-          args := #[setupFile.toString, irFile.toString, cFile.toString]
-          env := #[
-            ("LEAN_PATH", leanPath.toString)
-          ]
-        }
+        match sandbox? with
+        | some d =>
+          d.reset
+          let irOut := d.outPath irFile
+          let cOut := d.outPath cFile
+          let out ← Lake.WrappedExec.runRawProcOrWrapped
+            { cmd := leanir.toString
+              args := #[setupFile.toString, irOut.toString, cOut.toString]
+              env := SandboxDirs.spawnEnv (some d) leanPath }
+            #[setupFile] #[irOut, cOut] lakeRoots s!"{jobId}_leanir"
+          unless out.stderr.isEmpty do
+            logInfo s!"stderr:\n{out.stderr.trimAscii}"
+          if out.exitCode ≠ 0 then
+            error s!"leanir exited with code {out.exitCode}"
+          relocateSandboxOutput d irFile
+          relocateSandboxOutput d cFile
+        | none =>
+          proc {
+            cmd := leanir.toString
+            args := #[setupFile.toString, irFile.toString, cFile.toString]
+            env := #[
+              ("LEAN_PATH", leanPath.toString)
+            ]
+          }
       catch e =>
         if let some oleanFile := arts.olean? then
           removeFileIfExists oleanFile

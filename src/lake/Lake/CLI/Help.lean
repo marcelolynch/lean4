@@ -57,6 +57,10 @@ BASIC OPTIONS:
   --keep-toolchain      do not update toolchain on workspace update
   --allow-empty         accept bare builds with no default targets configured
   --no-build            exit immediately if a build target is not up-to-date
+  --sandbox             route each module build's outputs through a private scratch
+                        dir and relocate them afterwards; provides isolation only
+                        when paired with a write-confining `$LAKE_WRAPPED_EXEC`
+                        (e.g. a Landlock wrapper) -- on its own it does not isolate
   --no-cache            build packages locally; do not download build caches
   --try-cache           attempt to download build caches for supported packages
   --json, -J            output JSON-formatted results (in `lake query`)
