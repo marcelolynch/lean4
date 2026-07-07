@@ -1,0 +1,10 @@
+name = "lake"
+defaultTargets = ["Lake", "lake"]
+
+[[lean_lib]]
+name = "Lake"
+
+[[lean_exe]]
+name = "lake"
+root = "LakeMain"
+supportInterpreter = true
